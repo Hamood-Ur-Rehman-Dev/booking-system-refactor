@@ -8,6 +8,17 @@ use DTApi\Models\Distance;
 use Illuminate\Http\Request;
 use DTApi\Repository\BookingRepository;
 
+use Illuminate\Support\Facades\Log;
+use App\Http\Requests\UpdateJobWhileEmailRequest;
+use App\Http\Requests\JobActionRequest;
+use App\Http\Requests\DistanceFeedRequest;
+
+// Improvements
+// - Error handling with try-catch blocks and logging errors with Log class
+// - Used Laravel's validation features for input validation.
+// - As this controller is handling API requests, so it better to always reture JSON responce
+//    - so insted of return response(); use return response()->json();
+
 /**
  * Class BookingController
  * @package DTApi\Http\Controllers
@@ -35,17 +46,29 @@ class BookingController extends Controller
      */
     public function index(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
+        try {
+            $userId     = $request->get('user_id');
+            $userType   = $request->__authenticatedUser->user_type;
 
-            $response = $this->repository->getUsersJobs($user_id);
+            $response   = $userId
+            ? $this->repository->getUsersJobs($user_id) 
+            : ($this->isAdmin($userType) ? $this->repository->getAll($request) : []);
 
+            return response()->json($response); //  it would be more appropriate to use this
+        }catch (\Exception $e) {
+            Log::error('Error in index method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while fetching jobs.')], 500);
         }
-        elseif($request->__authenticatedUser->user_type == env('ADMIN_ROLE_ID') || $request->__authenticatedUser->user_type == env('SUPERADMIN_ROLE_ID'))
-        {
-            $response = $this->repository->getAll($request);
-        }
+    }
 
-        return response($response);
+    /**
+     * @param string $request
+     * @return bool
+     */
+    private function isAdmin($userType): bool
+    {
+        // Suggestion: Would Be Better If Use Auth::user()->hasRole('admin') - Spatie/RolePermission Package
+        return in_array($userType, [env('ADMIN_ROLE_ID'), env('SUPERADMIN_ROLE_ID')]);
     }
 
     /**
@@ -54,51 +77,68 @@ class BookingController extends Controller
      */
     public function show($id)
     {
-        $job = $this->repository->with('translatorJobRel.user')->find($id);
-
-        return response($job);
+        try {
+            $job = $this->repository->with('translatorJobRel.user')->find($id);
+            return response()->json($job);
+        } catch (\Exception $e) {
+            Log::error('Error in show method: ' . $e->getMessage());
+            return response()->json(['error' => __('Job not found.')], 404);
+        }
     }
 
     /**
-     * @param Request $request
+     * @param BookingRequest $request
      * @return mixed
      */
-    public function store(Request $request)
+    public function store(BookingRequest $request)
     {
-        $data = $request->all();
-
-        $response = $this->repository->store($request->__authenticatedUser, $data);
-
-        return response($response);
+        // Comments: Although method is using BookingRequest but still $request->all() use $request->validated() instead
+        try {
+            $data       = $request->validated();
+            $response   = $this->repository->store($request->__authenticatedUser, $data);
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in store method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while creating the job.')], 500);
+        }
 
     }
 
     /**
      * @param $id
-     * @param Request $request
+     * @param BookingRequest $request
      * @return mixed
      */
-    public function update($id, Request $request)
+    public function update($id, BookingRequest $request)
     {
-        $data = $request->all();
-        $cuser = $request->__authenticatedUser;
-        $response = $this->repository->updateJob($id, array_except($data, ['_token', 'submit']), $cuser);
-
-        return response($response);
+        // Comments: Similar to store try using BookingRequest for consistance and do validate inputs.
+        try {
+            $data       = $request->except(['_token', 'submit']);
+            $cuser      = $request->__authenticatedUser;
+            $response   = $this->repository->updateJob($id, $data, $cuser);
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in update method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while updating the job.')], 500);
+        }
     }
 
     /**
-     * @param Request $request
+     * @param UpdateJobWhileEmailRequest $request
      * @return mixed
      */
-    public function immediateJobEmail(Request $request)
+    public function immediateJobEmail(UpdateJobWhileEmailRequest $request)
     {
-        $adminSenderEmail = config('app.adminemail');
-        $data = $request->all();
+        try {
+            $adminSenderEmail   = config('app.adminemail');
+            $data               = $request->validated();
+            $response           = $this->repository->storeJobEmail($data);
 
-        $response = $this->repository->storeJobEmail($data);
-
-        return response($response);
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in immediateJobEmail method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while sending job email.')], 500);
+        }
     }
 
     /**
@@ -107,74 +147,104 @@ class BookingController extends Controller
      */
     public function getHistory(Request $request)
     {
-        if($user_id = $request->get('user_id')) {
+        try{
+            $user_id  = $request->get('user_id');
+            $response = $user_id
+                ? $this->repository->getUsersJobsHistory($user_id, $request)
+                : null;
+        } catch (\Exception $e) {
+            Log::error('Error in getHistory method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while fetching job history.')], 500);
+        }
+    }
 
-            $response = $this->repository->getUsersJobsHistory($user_id, $request);
-            return response($response);
+    /**
+     * @param JobActionRequest $request
+     * @return mixed
+     */
+    public function acceptJob(JobActionRequest $request)
+    {
+        try {
+            $data       = $request->validated();
+            $user       = $request->__authenticatedUser;
+            $response   = $this->repository->acceptJob($data, $user);
+    
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in getHistory method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while accepting job.')], 500);
+        }
+    }
+
+    /**
+     * @param JobActionRequest $request
+     * @return mixed
+     */
+    public function acceptJobWithId(JobActionRequest $request)
+    {
+        try {
+            $data       = $request->get('job_id');
+            $user       = $request->__authenticatedUser;
+            $response   = $this->repository->acceptJobWithId($data, $user);
+
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in acceptJobWithId method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while accepting job.')], 500);
+        }
+    }
+
+    /**
+     * @param JobActionRequest $request
+     * @return mixed
+     */
+    public function cancelJob(JobActionRequest $request)
+    {
+        try {
+            $data       = $request->validated();
+            $user       = $request->__authenticatedUser;
+            $response   = $this->repository->cancelJobAjax($data, $user);
+
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in cancelJob method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while canceling job.')], 500);
+        }
+    }
+
+    /**
+     * @param JobActionRequest $request
+     * @return mixed
+     */
+    public function endJob(JobActionRequest $request)
+    {
+        try {
+            $data     = $request->validated();
+            $response = $this->repository->endJob($data);
+
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in endJob method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while ending job.')], 500);
         }
 
-        return null;
     }
 
     /**
-     * @param Request $request
+     * @param JobActionRequest $request
      * @return mixed
      */
-    public function acceptJob(Request $request)
+    public function customerNotCall(JobActionRequest $request)
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
+        try {
+            $data     = $request->validated();
+            $response = $this->repository->customerNotCall($data);
 
-        $response = $this->repository->acceptJob($data, $user);
-
-        return response($response);
-    }
-
-    public function acceptJobWithId(Request $request)
-    {
-        $data = $request->get('job_id');
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->acceptJobWithId($data, $user);
-
-        return response($response);
-    }
-
-    /**
-     * @param Request $request
-     * @return mixed
-     */
-    public function cancelJob(Request $request)
-    {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
-
-        $response = $this->repository->cancelJobAjax($data, $user);
-
-        return response($response);
-    }
-
-    /**
-     * @param Request $request
-     * @return mixed
-     */
-    public function endJob(Request $request)
-    {
-        $data = $request->all();
-
-        $response = $this->repository->endJob($data);
-
-        return response($response);
-
-    }
-
-    public function customerNotCall(Request $request)
-    {
-        $data = $request->all();
-
-        $response = $this->repository->customerNotCall($data);
-
-        return response($response);
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in customerNotCall method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while updating job completion status.')], 500);
+        }
 
     }
 
@@ -184,92 +254,103 @@ class BookingController extends Controller
      */
     public function getPotentialJobs(Request $request)
     {
-        $data = $request->all();
-        $user = $request->__authenticatedUser;
+        try {
+            $data = $request->all(); // <-- Why this is HERE?
+            $user = $request->__authenticatedUser;
 
-        $response = $this->repository->getPotentialJobs($user);
+            $response = $this->repository->getPotentialJobs($user);
 
-        return response($response);
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in getPotentialJobs method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while fetching potential jobs.')], 500);
+        }
     }
 
-    public function distanceFeed(Request $request)
+    /**
+     * @param DistanceFeedRequest $request
+     * @return mixed
+     */
+    public function distanceFeed(DistanceFeedRequest $request)
     {
-        $data = $request->all();
-
-        if (isset($data['distance']) && $data['distance'] != "") {
-            $distance = $data['distance'];
-        } else {
-            $distance = "";
+        try{
+            $data = $request->validated();
+    
+            $this->updateDistanceAndTime($data);
+            $this->updateJobDetails($data);
+    
+            return response()->json('Record updated!');
+        } catch (\Exception $e) {
+            Log::error('Error in distanceFeed method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while updating job.')], 500);
         }
-        if (isset($data['time']) && $data['time'] != "") {
-            $time = $data['time'];
-        } else {
-            $time = "";
-        }
-        if (isset($data['jobid']) && $data['jobid'] != "") {
-            $jobid = $data['jobid'];
-        }
-
-        if (isset($data['session_time']) && $data['session_time'] != "") {
-            $session = $data['session_time'];
-        } else {
-            $session = "";
-        }
-
-        if ($data['flagged'] == 'true') {
-            if($data['admincomment'] == '') return "Please, add comment";
-            $flagged = 'yes';
-        } else {
-            $flagged = 'no';
-        }
-        
-        if ($data['manually_handled'] == 'true') {
-            $manually_handled = 'yes';
-        } else {
-            $manually_handled = 'no';
-        }
-
-        if ($data['by_admin'] == 'true') {
-            $by_admin = 'yes';
-        } else {
-            $by_admin = 'no';
-        }
-
-        if (isset($data['admincomment']) && $data['admincomment'] != "") {
-            $admincomment = $data['admincomment'];
-        } else {
-            $admincomment = "";
-        }
-        if ($time || $distance) {
-
-            $affectedRows = Distance::where('job_id', '=', $jobid)->update(array('distance' => $distance, 'time' => $time));
-        }
-
-        if ($admincomment || $session || $flagged || $manually_handled || $by_admin) {
-
-            $affectedRows1 = Job::where('id', '=', $jobid)->update(array('admin_comments' => $admincomment, 'flagged' => $flagged, 'session_time' => $session, 'manually_handled' => $manually_handled, 'by_admin' => $by_admin));
-
-        }
-
-        return response('Record updated!');
     }
 
-    public function reopen(Request $request)
+    private function updateDistanceAndTime(array $data)
     {
-        $data = $request->all();
-        $response = $this->repository->reopen($data);
+        if (!empty($data['distance']) || !empty($data['time'])) {
+            Distance::where('job_id', $data['jobid'])->update([
+                'distance'  => $data['distance'] ?? '',
+                'time'      => $data['time']     ?? ''
+            ]);
+        }
+    }
 
-        return response($response);
+    private function updateJobDetails(array $data)
+    {
+        $jobDetails = [
+            'admin_comments'    => $data['admincomment'] ?? '',
+            'session_time'      => $data['session_time'] ?? '',
+            'manually_handled'  => $data['manually_handled'] ? 'yes' : 'no',
+            'flagged'           => $data['flagged']  ? 'yes' : 'no',
+            'by_admin'          => $data['by_admin'] ? 'yes' : 'no'
+        ];
+
+        Job::where('id', $data['jobid'])->update($jobDetails);
+    }
+
+    /**
+     * @param ActionRequest $request
+     * @return mixed
+     */
+    public function reopen(ActionRequest $request)
+    {
+        try {
+            $data     = $request->validated();
+            $response = $this->repository->reopen($data);
+
+            return response()->json($response);
+        } catch (\Exception $e) {
+            Log::error('Error in reopen method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while reopening job.')], 500);
+        }
     }
 
     public function resendNotifications(Request $request)
     {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
-        $job_data = $this->repository->jobToData($job);
-        $this->repository->sendNotificationTranslator($job, $job_data, '*');
+        $validator = Validator::make($request->all(), [
+            'jobid'     => 'required|jobs,id'
+        ]);
 
-        return response(['success' => 'Push sent']);
+        if ($validator->fails()) {
+            $errors = $validator->errors();
+            return response()->json([
+                'error' => $errors
+            ], 400);
+        }
+
+        // Comments: Maybe Validation Is Already Taken Care Of On Front End, But Is Good To Have Backend Validation
+        try{
+            $data     = $request->all();
+            $job      = $this->repository->find($data['jobid']);
+            $job_data = $this->repository->jobToData($job);
+            $this->repository->sendNotificationTranslator($job, $job_data, '*');
+    
+            return response()->json(['success' => __('Push sent')]);
+        } catch (\Exception $e) {
+            Log::error('Error in reopen method: ' . $e->getMessage());
+            return response()->json(['error' => __('An error occurred while sending notification.')], 500);
+        }
     }
 
     /**
@@ -279,15 +360,27 @@ class BookingController extends Controller
      */
     public function resendSMSNotifications(Request $request)
     {
-        $data = $request->all();
-        $job = $this->repository->find($data['jobid']);
-        $job_data = $this->repository->jobToData($job);
+        $validator = Validator::make($request->all(), [
+            'jobid'     => 'required|jobs,id'
+        ]);
 
+        if ($validator->fails()) {
+            $errors = $validator->errors();
+            return response()->json([
+                'error' => $errors
+            ], 400);
+        }
+
+        
         try {
+            $data     = $request->validaed();
+            $job      = $this->repository->find($data['jobid']);
+            $job_data = $this->repository->jobToData($job);
+
             $this->repository->sendSMSNotificationToTranslator($job);
-            return response(['success' => 'SMS sent']);
+            return response()->json(['success' => __('SMS sent')]);
         } catch (\Exception $e) {
-            return response(['success' => $e->getMessage()]);
+            return response()->json(['success' => $e->getMessage()]);
         }
     }
 
