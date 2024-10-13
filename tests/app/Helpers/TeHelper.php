@@ -42,7 +42,7 @@ class TeHelper
 
     public static function willExpireAt($due_time, $created_at)
     {
-        $due_time = Carbon::parse($due_time);
+        $due_time   = Carbon::parse($due_time);
         $created_at = Carbon::parse($created_at);
 
         $difference = $due_time->diffInHours($created_at);
